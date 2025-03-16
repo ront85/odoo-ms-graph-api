@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Action for debug logs -->
+    <record id="action_graph_api_debug" model="ir.actions.act_url">
+        <field name="name">View Debug Logs</field>
+        <field name="url">/mail_graph_api/debug</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- Action for Microsoft Authentication -->
+    <record id="action_ms_auth" model="ir.actions.act_url">
+        <field name="name">Authenticate with Microsoft</field>
+        <field name="url">/mail_graph_api/auth</field>
+        <field name="target">self</field>
+    </record>
+
+    <!-- Extend the mail server form view -->
+    <record id="view_ir_mail_server_form_inherited" model="ir.ui.view">
+        <field name="name">ir.mail_server.form.inherited</field>
+        <field name="model">ir.mail_server</field>
+        <field name="inherit_id" ref="base.ir_mail_server_form"/>
+        <field name="arch" type="xml">
+            <!-- Add Graph API toggle -->
+            <xpath expr="//field[@name='smtp_authentication']/.." position="before">
+                <group>
+                    <field name="use_graph_api"/>
+                </group>
+            </xpath>
+
+            <!-- Hide SMTP fields when Graph API is enabled -->
+            <xpath expr="//field[@name='smtp_authentication']/.." position="attributes">
+                <attribute name="invisible">use_graph_api</attribute>
+            </xpath>
+            <xpath expr="//field[@name='smtp_encryption']/.." position="attributes">
+                <attribute name="invisible">use_graph_api</attribute>
+            </xpath>
+
+            <!-- Add Microsoft Graph API settings -->
+            <xpath expr="//notebook" position="inside">
+                <page string="Microsoft Graph API" invisible="not use_graph_api">
+                    <group>
+                        <group>
+                            <field name="ms_client_id" required="use_graph_api"/>
+                            <field name="ms_client_secret" required="use_graph_api"/>
+                            <field name="ms_tenant_id" required="use_graph_api"/>
+                            <field name="ms_sender_email" required="use_graph_api"/>
+                        </group>
+                        <group>
+                            <field name="ms_access_token" readonly="1"/>
+                            <field name="ms_refresh_token" readonly="1"/>
+                            <field name="ms_token_expiry" readonly="1"/>
+                        </group>
+                    </group>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="test_smtp_connection" type="object" string="Test Connection" class="oe_highlight" invisible="not use_graph_api"/>
+                        <button string="Authenticate with Microsoft" class="oe_highlight" invisible="not use_graph_api" 
+                                icon="fa-microsoft" 
+                                type="object" 
+                                name="action_authenticate_microsoft"/>
+                    </div>
+                </page>
+                <page string="Graph API Logs" invisible="not use_graph_api">
+                    <field name="graph_api_logs" readonly="1" widget="html"/>
+                </page>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Success page template -->
+    <template id="success_page" name="Microsoft Graph API Success">
+        <t t-call="web.login_layout">
+            <div class="container">
+                <div class="alert alert-success">
+                    <h3>Success!</h3>
+                    <p t-esc="message"/>
+                </div>
+                <div class="text-center">
+                    <a href="/web" class="btn btn-primary">Return to Odoo</a>
+                </div>
+            </div>
+        </t>
+    </template>
+
+    <!-- Error page template -->
+    <template id="error_page" name="Microsoft Graph API Error">
+        <t t-call="web.login_layout">
+            <div class="container">
+                <div class="alert alert-danger">
+                    <h3>Error</h3>
+                    <p t-esc="error"/>
+                </div>
+                <div class="text-center">
+                    <a href="/web" class="btn btn-primary">Return to Odoo</a>
+                </div>
+            </div>
+        </t>
+    </template>
+
+    <!-- Debug logs template -->
+    <template id="debug_logs" name="Microsoft Graph API Debug Logs">
+        <t t-call="web.login_layout">
+            <div class="container">
+                <h2>Microsoft Graph API Debug Logs</h2>
+                <div class="alert alert-info">
+                    <p>Showing the last 100 log entries related to Microsoft Graph API.</p>
+                </div>
+                <div class="logs-container" style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; font-family: monospace; white-space: pre-wrap; max-height: 600px; overflow-y: auto;">
+                    <t t-foreach="logs" t-as="log">
+                        <div t-attf-style="margin-bottom: 10px; color: #{{'INFO': 'blue', 'WARNING': 'orange', 'ERROR': 'red'}.get(log.level, 'black')};">
+                            <strong t-esc="log.create_date"/> [<span t-esc="log.level"/>] <span t-esc="log.message"/>
+                        </div>
+                    </t>
+                </div>
+                <div class="text-center mt-4">
+                    <a href="/web" class="btn btn-primary">Return to Odoo</a>
+                </div>
+            </div>
+        </t>
+    </template>
+</odoo> 
