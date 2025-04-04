@@ -52,15 +52,17 @@
                         </group>
                     </group>
                     <div class="oe_button_box" name="button_box">
-                        <button name="test_smtp_connection" type="object" string="Test Connection" class="oe_highlight" invisible="not use_graph_api"/>
-                        <button string="Authenticate with Microsoft" class="oe_highlight" invisible="not use_graph_api" 
+                        <button name="test_smtp_connection" type="object" string="Test Connection" class="oe_highlight"/>
+                        <button string="Authenticate with Microsoft" class="oe_highlight"
                                 icon="fa-microsoft" 
                                 type="object" 
                                 name="action_authenticate_microsoft"/>
                     </div>
                 </page>
                 <page string="Graph API Logs" invisible="not use_graph_api">
-                    <field name="graph_api_logs" readonly="1" widget="html"/>
+                    <group>
+                        <field name="graph_api_logs" readonly="1" widget="html" nolabel="1"/>
+                    </group>
                 </page>
             </xpath>
         </field>

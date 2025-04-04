@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <template id="ms_auth_error" name="Microsoft Auth Error">
+        <t t-call="web.login_layout">
+            <div class="container">
+                <div class="card o_database_list">
+                    <div class="card-body">
+                        <h3 class="text-center">Microsoft Authentication Error</h3>
+                        <div class="alert alert-danger">
+                            <p t-esc="error"/>
+                        </div>
+                        <div class="text-center">
+                            <a class="btn btn-primary" href="/web#id=&amp;action=mail.action_email_configure&amp;view_type=list">
+                                <i class="fa fa-arrow-left"/> Return to Mail Server Configuration
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </t>
+    </template>
+</odoo> 

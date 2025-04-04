@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Inherit Form View -->
+    <record id="ir_mail_server_form_inherit" model="ir.ui.view">
+        <field name="name">ir.mail_server.form.inherit</field>
+        <field name="model">ir.mail_server</field>
+        <field name="inherit_id" ref="base.ir_mail_server_form"/>
+        <field name="arch" type="xml">
+            <!-- Add Microsoft Graph API field -->
+            <xpath expr="//field[@name='smtp_encryption']" position="after">
+                <field name="use_graph_api"/>
+            </xpath>
+            
+            <!-- Add Microsoft Graph API settings page -->
+            <xpath expr="//notebook" position="inside">
+                <page string="Microsoft Graph API Settings" attrs="{'invisible': [('use_graph_api', '=', False)]}">
+                    <group>
+                        <field name="ms_client_id" attrs="{'required': [('use_graph_api', '=', True)]}"/>
+                        <field name="ms_client_secret" attrs="{'required': [('use_graph_api', '=', True)]}"/>
+                        <field name="ms_tenant_id" attrs="{'required': [('use_graph_api', '=', True)]}"/>
+                        <field name="ms_sender_email" attrs="{'required': [('use_graph_api', '=', True)]}"/>
+                        <field name="ms_access_token" readonly="1"/>
+                        <field name="ms_refresh_token" readonly="1"/>
+                        <field name="ms_token_expiry" readonly="1"/>
+                        <!-- Add a button for OAuth -->
+                        <button name="button_oauth_microsoft" string="Authenticate with Microsoft" type="object" 
+                                class="oe_highlight" attrs="{'invisible': [('ms_refresh_token', '!=', False)]}"
+                                context="{'auth_type': 'microsoft'}"/>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo> 
