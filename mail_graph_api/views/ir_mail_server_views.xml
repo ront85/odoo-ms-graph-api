@@ -13,18 +13,18 @@
             
             <!-- Add Microsoft Graph API settings page -->
             <xpath expr="//notebook" position="inside">
-                <page string="Microsoft Graph API Settings" attrs="{'invisible': [('use_graph_api', '=', False)]}">
+                <page string="Microsoft Graph API Settings" invisible="not use_graph_api">
                     <group>
-                        <field name="ms_client_id" attrs="{'required': [('use_graph_api', '=', True)]}"/>
-                        <field name="ms_client_secret" attrs="{'required': [('use_graph_api', '=', True)]}"/>
-                        <field name="ms_tenant_id" attrs="{'required': [('use_graph_api', '=', True)]}"/>
-                        <field name="ms_sender_email" attrs="{'required': [('use_graph_api', '=', True)]}"/>
+                        <field name="ms_client_id" required="use_graph_api"/>
+                        <field name="ms_client_secret" required="use_graph_api"/>
+                        <field name="ms_tenant_id" required="use_graph_api"/>
+                        <field name="ms_sender_email" required="use_graph_api"/>
                         <field name="ms_access_token" readonly="1"/>
                         <field name="ms_refresh_token" readonly="1"/>
                         <field name="ms_token_expiry" readonly="1"/>
                         <!-- Add a button for OAuth -->
                         <button name="button_oauth_microsoft" string="Authenticate with Microsoft" type="object" 
-                                class="oe_highlight" attrs="{'invisible': [('ms_refresh_token', '!=', False)]}"
+                                class="oe_highlight" invisible="ms_refresh_token != False"
                                 context="{'auth_type': 'microsoft'}"/>
                     </group>
                 </page>

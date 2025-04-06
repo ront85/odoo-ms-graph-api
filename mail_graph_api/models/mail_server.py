@@ -489,7 +489,7 @@ class IrMailServer(models.Model):
             
         return {
             'type': 'ir.actions.act_url',
-            'url': '/microsoft/auth',
+            'url': f'/mail_graph_api/auth?id={self.id}',
             'target': 'self',
         }
 

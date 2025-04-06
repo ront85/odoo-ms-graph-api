@@ -195,7 +195,7 @@ class MailMail(models.Model):
                                         "@odata.type": "#microsoft.graph.fileAttachment",
                                         "name": attachment.name,
                                         "contentType": attachment.mimetype or "application/octet-stream",
-                                        "contentBytes": base64.b64encode(attachment.datas).decode('utf-8')
+                                        "contentBytes": attachment.datas.decode('utf-8') if isinstance(attachment.datas, bytes) else attachment.datas
                                     }
                                     attachments.append(attachment_data)
                                     total_size += attachment_size

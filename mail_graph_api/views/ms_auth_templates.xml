@@ -10,7 +10,7 @@
                             <p t-esc="error"/>
                         </div>
                         <div class="text-center">
-                            <a class="btn btn-primary" href="/web#id=&amp;action=mail.action_email_configure&amp;view_type=list">
+                            <a class="btn btn-primary" href="/web#action=mail.ir_mail_server_list_action">
                                 <i class="fa fa-arrow-left"/> Return to Mail Server Configuration
                             </a>
                         </div>

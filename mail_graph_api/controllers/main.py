@@ -8,88 +8,179 @@ _logger = logging.getLogger(__name__)
 
 class MicrosoftAuthController(http.Controller):
     
-    @http.route('/microsoft/auth', type='http', auth='user')
+    @http.route('/mail_graph_api/auth', type='http', auth='user')
     def microsoft_auth_start(self, **kw):
         """Start the Microsoft OAuth flow"""
-        _logger.info("Starting Microsoft OAuth flow")
+        _logger.info("Microsoft Graph API authentication request received")
         
-        # Find a mail server that uses Microsoft Graph API
-        mail_server = request.env['ir.mail_server'].sudo().search([('use_graph_api', '=', True)], limit=1)
+        # Get mail server ID from the request
+        mail_server_id = kw.get('id')
         
-        if not mail_server:
-            return werkzeug.utils.redirect('/web#id=&action=mail.action_email_configure')
+        if not mail_server_id:
+            _logger.error("Microsoft Graph API error: Missing mail server ID")
+            return self._render_error(_("No mail server ID provided. Please try again."))
+            
+        # Find the mail server
+        mail_server = request.env['ir.mail_server'].sudo().browse(int(mail_server_id))
+        
+        if not mail_server.exists() or not mail_server.use_graph_api:
+            _logger.error(f"Microsoft Graph API error: Invalid mail server {mail_server_id}")
+            return self._render_error(_("Invalid mail server or Graph API not enabled."))
             
         if not mail_server.ms_client_id or not mail_server.ms_tenant_id:
-            return request.render('mail_graph_api.ms_auth_error', {
-                'error': _("Microsoft Graph API client ID or tenant ID not configured.")
-            })
+            _logger.error("Microsoft Graph API error: Missing credentials")
+            return self._render_error(_("Microsoft Graph API client ID or tenant ID not configured."))
             
         # OAuth state to verify the callback
-        state = {
-            'model': 'ir.mail_server',
-            'id': mail_server.id,
-        }
-        
-        # Store in session
-        request.session['microsoft_oauth_state'] = state
+        state = mail_server_id
         
         # Build the authorization URL
-        redirect_uri = request.httprequest.url_root.rstrip('/') + '/microsoft/auth/callback'
+        redirect_uri = request.httprequest.url_root.rstrip('/') + '/mail_graph_api/auth/callback'
         
         auth_url = f"https://login.microsoftonline.com/{mail_server.ms_tenant_id}/oauth2/v2.0/authorize"
         auth_url += f"?client_id={mail_server.ms_client_id}"
         auth_url += "&response_type=code"
         auth_url += f"&redirect_uri={redirect_uri}"
         auth_url += "&scope=https://graph.microsoft.com/.default offline_access"
+        auth_url += f"&state={state}"
         auth_url += "&response_mode=query"
         
-        _logger.info("Redirecting to Microsoft OAuth: %s", auth_url)
+        _logger.info(f"Redirecting to Microsoft OAuth: {auth_url}")
         
         return werkzeug.utils.redirect(auth_url)
         
-    @http.route('/microsoft/auth/callback', type='http', auth='user')
+    @http.route('/mail_graph_api/auth/callback', type='http', auth='user')
     def microsoft_auth_callback(self, **kw):
         """Handle the callback from Microsoft OAuth"""
-        _logger.info("Received Microsoft OAuth callback: %s", kw)
+        _logger.info(f"Microsoft OAuth callback received: {kw}")
         
         error = kw.get('error')
         if error:
             error_description = kw.get('error_description', '')
-            _logger.error("Microsoft OAuth error: %s - %s", error, error_description)
-            return request.render('mail_graph_api.ms_auth_error', {
-                'error': f"{error}: {error_description}"
-            })
+            _logger.error(f"Microsoft OAuth error: {error} - {error_description}")
+            return self._render_error(f"{error}: {error_description}")
             
         code = kw.get('code')
+        state = kw.get('state')  # This contains the mail server ID
+        
         if not code:
             _logger.error("No authorization code received from Microsoft")
-            return request.render('mail_graph_api.ms_auth_error', {
-                'error': _("No authorization code received from Microsoft.")
-            })
-            
-        # Verify state
-        state = request.session.get('microsoft_oauth_state')
-        if not state:
-            _logger.error("No OAuth state found in session")
-            return request.render('mail_graph_api.ms_auth_error', {
-                'error': _("Authentication failed: Invalid state.")
-            })
-            
-        # Exchange the code for access token
-        redirect_uri = request.httprequest.url_root.rstrip('/') + '/microsoft/auth/callback'
+            return self._render_error(_("No authorization code received from Microsoft."))
         
-        try:
-            result = request.env['ir.mail_server'].sudo().auth_oauth_microsoft(code, redirect_uri)
-            _logger.info("Microsoft OAuth authentication successful: %s", result)
+        if not state:
+            _logger.error("No state parameter received")
+            return self._render_error(_("No state parameter received. Authentication failed."))
             
-            # Redirect back to mail server configuration
-            return werkzeug.utils.redirect('/web#id=&action=mail.action_email_configure&view_type=list')
+        try:
+            mail_server_id = int(state)
+            mail_server = request.env['ir.mail_server'].sudo().browse(mail_server_id)
+            
+            if not mail_server.exists():
+                _logger.error(f"Mail server not found: {mail_server_id}")
+                return self._render_error(_("Mail server not found."))
+            
+            # Exchange the code for access token
+            redirect_uri = request.httprequest.url_root.rstrip('/') + '/mail_graph_api/auth/callback'
+            
+            from datetime import datetime, timedelta
+            import requests
+            
+            token_url = f"https://login.microsoftonline.com/{mail_server.ms_tenant_id}/oauth2/v2.0/token"
+            token_data = {
+                'client_id': mail_server.ms_client_id,
+                'client_secret': mail_server.ms_client_secret,
+                'code': code,
+                'redirect_uri': redirect_uri,
+                'grant_type': 'authorization_code',
+                'scope': 'https://graph.microsoft.com/.default offline_access'
+            }
+            
+            response = requests.post(token_url, data=token_data, timeout=10)
+            
+            if response.status_code != 200:
+                _logger.error(f"Failed to exchange authorization code for tokens: {response.text}")
+                return self._render_error(_("Failed to authenticate with Microsoft Graph API: %s") % response.text)
+                
+            token_info = response.json()
+            
+            # Store the tokens
+            mail_server.sudo().write({
+                'ms_access_token': token_info.get('access_token'),
+                'ms_refresh_token': token_info.get('refresh_token'),
+                # Calculate and store expiry time
+                'ms_token_expiry': datetime.now() + timedelta(seconds=token_info.get('expires_in', 3600))
+            })
+            
+            # Get user email if not already set
+            if not mail_server.ms_sender_email:
+                try:
+                    headers = {
+                        'Authorization': f'Bearer {token_info.get("access_token")}',
+                        'Content-Type': 'application/json'
+                    }
+                    user_response = requests.get('https://graph.microsoft.com/v1.0/me', headers=headers, timeout=10)
+                    if user_response.status_code == 200:
+                        user_info = user_response.json()
+                        mail_server.sudo().write({
+                            'ms_sender_email': user_info.get('mail') or user_info.get('userPrincipalName')
+                        })
+                except Exception as e:
+                    _logger.error(f"Error getting user email: {str(e)}")
+            
+            _logger.info(f"Microsoft OAuth authentication successful for server {mail_server.id}")
+            return self._render_success(_("Authentication successful! You can now send emails using Microsoft Graph API."))
+            
+        except ValueError:
+            _logger.error(f"Invalid state (mail_server_id): {state}")
+            return self._render_error(_("Invalid state parameter."))
             
         except Exception as e:
-            _logger.error("Error in Microsoft OAuth callback: %s", str(e))
-            return request.render('mail_graph_api.ms_auth_error', {
-                'error': str(e)
-            })
+            _logger.error(f"Error in auth_oauth_microsoft: {str(e)}")
+            return self._render_error(_("Error authenticating with Microsoft Graph API: %s") % str(e))
+
+    def _render_error(self, error_message):
+        """Simple error page renderer that doesn't rely on website layout"""
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Microsoft Graph API - Error</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .error {{ color: red; padding: 10px; border: 1px solid red; background-color: #ffeeee; }}
+                .button {{ background-color: #4CAF50; color: white; padding: 10px 15px; text-decoration: none; display: inline-block; margin-top: 20px; }}
+            </style>
+        </head>
+        <body>
+            <h2>Microsoft Graph API Error</h2>
+            <div class="error">{error_message}</div>
+            <a href="/web#action=mail.ir_mail_server_list_action" class="button">Return to Mail Server Configuration</a>
+        </body>
+        </html>
+        """
+        return http.Response(html, content_type='text/html')
+        
+    def _render_success(self, success_message):
+        """Simple success page renderer that doesn't rely on website layout"""
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Microsoft Graph API - Success</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .success {{ color: green; padding: 10px; border: 1px solid green; background-color: #eeffee; }}
+                .button {{ background-color: #4CAF50; color: white; padding: 10px 15px; text-decoration: none; display: inline-block; margin-top: 20px; }}
+            </style>
+        </head>
+        <body>
+            <h2>Microsoft Graph API Success</h2>
+            <div class="success">{success_message}</div>
+            <a href="/web#action=mail.ir_mail_server_list_action" class="button">Return to Mail Server Configuration</a>
+        </body>
+        </html>
+        """
+        return http.Response(html, content_type='text/html')
 
 class MicrosoftGraphDebugController(http.Controller):
     
@@ -98,125 +189,80 @@ class MicrosoftGraphDebugController(http.Controller):
         """Display debug logs for Microsoft Graph API"""
         _logger.info("Accessing Graph API debug logs")
         
+        # Check if user has access
+        if not request.env.user.has_group('base.group_system'):
+            return self._render_error(_("Only administrators can view debug logs."))
+        
         # Get the most recent 100 logs related to Microsoft Graph API
         logs = request.env['ir.logging'].sudo().search([
             ('name', 'ilike', '%mail_graph_api%'),
             ('level', 'in', ['INFO', 'ERROR', 'WARNING'])
         ], order='create_date desc', limit=100)
         
-        return request.render('mail_graph_api.debug_logs', {
-            'logs': logs
-        })
+        # Format logs into HTML
+        log_html = "<h2>Microsoft Graph API Debug Logs</h2>"
+        log_html += "<p>Showing the last 100 log entries related to Microsoft Graph API.</p>"
         
-    @http.route('/mail_graph_api/system_info', type='http', auth='user')
-    def system_info(self, **kw):
-        """Display system information relevant to Microsoft Graph API"""
-        _logger.info("Accessing Graph API system info")
-        
-        # Get mail servers that use Graph API
-        mail_servers = request.env['ir.mail_server'].sudo().search([
-            ('use_graph_api', '=', True)
-        ])
-        
-        # Get system parameters related to mail
-        mail_params = request.env['ir.config_parameter'].sudo().search([
-            ('key', 'ilike', '%mail%')
-        ])
-        
-        # Get Odoo version
-        version_info = request.env['ir.module.module'].sudo().search([
-            ('name', '=', 'base')
-        ], limit=1)
-        
-        # Get information about mail.mail records
-        mail_stats = {
-            'outgoing': request.env['mail.mail'].sudo().search_count([('state', '=', 'outgoing')]),
-            'sent': request.env['mail.mail'].sudo().search_count([('state', '=', 'sent')]),
-            'exception': request.env['mail.mail'].sudo().search_count([('state', '=', 'exception')]),
-            'graph_api_attempted': request.env['mail.mail'].sudo().search_count([('graph_api_attempted', '=', True)]),
-        }
-        
-        # Get recent failures
-        failed_mails = request.env['mail.mail'].sudo().search([
-            ('state', '=', 'exception')
-        ], order='create_date desc', limit=10)
-        
-        system_info = {
-            'odoo_version': version_info.installed_version if version_info else 'Unknown',
-            'mail_servers': [{
-                'name': server.name,
-                'ms_sender_email': server.ms_sender_email,
-                'token_expiry': server.ms_token_expiry,
-                'has_access_token': bool(server.ms_access_token),
-                'has_refresh_token': bool(server.ms_refresh_token),
-            } for server in mail_servers],
-            'mail_parameters': [{
-                'key': param.key,
-                'value': param.value
-            } for param in mail_params],
-            'mail_stats': mail_stats,
-            'failed_mails': [{
-                'id': mail.id,
-                'subject': mail.subject,
-                'date': mail.create_date,
-                'reason': mail.failure_reason
-            } for mail in failed_mails]
-        }
-        
-        return request.render('mail_graph_api.system_info', {
-            'system_info': system_info
-        })
-        
-    @http.route('/mail_graph_api/test_connection/<int:server_id>', type='http', auth='user')
-    def test_connection(self, server_id, **kw):
-        """Test the connection to Microsoft Graph API and return JSON result"""
-        _logger.info("Testing Graph API connection for server %s", server_id)
-        
-        server = request.env['ir.mail_server'].sudo().browse(server_id)
-        if not server.exists() or not server.use_graph_api:
-            return json.dumps({
-                'success': False,
-                'message': 'Server not found or Graph API not enabled'
-            })
+        if logs:
+            log_html += "<table border='1' cellpadding='5' style='border-collapse: collapse;'>"
+            log_html += "<tr><th>Date</th><th>Level</th><th>Message</th></tr>"
             
-        try:
-            # Set debug mode
-            server.debug_mode = True
-            
-            # Run the test
-            token = server._get_oauth_token()
-            
-            if not token:
-                return json.dumps({
-                    'success': False,
-                    'message': 'Failed to get access token'
-                })
+            for log in logs:
+                color = {
+                    'INFO': 'blue',
+                    'WARNING': 'orange',
+                    'ERROR': 'red'
+                }.get(log.level, 'black')
                 
-            headers = {
-                'Authorization': f'Bearer {token}',
-                'Content-Type': 'application/json'
-            }
-            
-            import requests
-            user_url = f"https://graph.microsoft.com/v1.0/users/{server.ms_sender_email}"
-            response = requests.get(user_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200:
-                user_data = response.json()
-                return json.dumps({
-                    'success': True,
-                    'message': f"Connection successful! Found user: {user_data.get('displayName', 'Unknown')}"
-                })
-            else:
-                error_msg = response.json().get('error', {}).get('message', 'Unknown error')
-                return json.dumps({
-                    'success': False,
-                    'message': f"API error: {error_msg}"
-                })
+                log_html += f"<tr>"
+                log_html += f"<td>{log.create_date}</td>"
+                log_html += f"<td style='color: {color};'>{log.level}</td>"
+                log_html += f"<td>{log.message}</td>"
+                log_html += "</tr>"
                 
-        except Exception as e:
-            _logger.error("Error testing connection: %s", str(e))
-            return json.dumps({
-                'success': False,
-                'message': f"Error: {str(e)}"
-            })
+            log_html += "</table>"
+        else:
+            log_html += "<p>No logs found. Try enabling debug mode and sending a test email.</p>"
+        
+        # Create a custom response with the logs
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Microsoft Graph API - Debug Logs</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                table {{ width: 100%; }}
+                th {{ background-color: #f2f2f2; }}
+                .button {{ background-color: #4CAF50; color: white; padding: 10px 15px; text-decoration: none; display: inline-block; margin-top: 20px; }}
+            </style>
+        </head>
+        <body>
+            {log_html}
+            <a href="/web#action=mail.ir_mail_server_list_action" class="button">Return to Mail Server Configuration</a>
+        </body>
+        </html>
+        """
+        return http.Response(html, content_type='text/html')
+        
+    def _render_error(self, error_message):
+        """Simple error page renderer that doesn't rely on website layout"""
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Microsoft Graph API - Error</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .error {{ color: red; padding: 10px; border: 1px solid red; background-color: #ffeeee; }}
+                .button {{ background-color: #4CAF50; color: white; padding: 10px 15px; text-decoration: none; display: inline-block; margin-top: 20px; }}
+            </style>
+        </head>
+        <body>
+            <h2>Microsoft Graph API Error</h2>
+            <div class="error">{error_message}</div>
+            <a href="/web#action=mail.ir_mail_server_list_action" class="button">Return to Mail Server Configuration</a>
+        </body>
+        </html>
+        """
+        return http.Response(html, content_type='text/html')

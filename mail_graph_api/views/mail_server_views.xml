@@ -35,6 +35,11 @@
                 <attribute name="invisible">use_graph_api</attribute>
             </xpath>
 
+            <!-- Make SMTP Host not required when Graph API is enabled -->
+            <xpath expr="//field[@name='smtp_host']" position="attributes">
+                <attribute name="required">not use_graph_api</attribute>
+            </xpath>
+
             <!-- Add Microsoft Graph API settings -->
             <xpath expr="//notebook" position="inside">
                 <page string="Microsoft Graph API" invisible="not use_graph_api">
@@ -52,17 +57,16 @@
                         </group>
                     </group>
                     <div class="oe_button_box" name="button_box">
-                        <button name="test_smtp_connection" type="object" string="Test Connection" class="oe_highlight"/>
                         <button string="Authenticate with Microsoft" class="oe_highlight"
                                 icon="fa-microsoft" 
                                 type="object" 
-                                name="action_authenticate_microsoft"/>
+                                name="button_oauth_microsoft"/>
+                        <button name="test_send_email" type="object" 
+                                string="Test Email" class="oe_highlight"
+                                help="Send a test email using Microsoft Graph API"/>
                         <button name="run_graph_api_diagnostics" type="object" 
                                 string="Run Diagnostics" class="oe_highlight"
                                 help="Run comprehensive diagnostics on Graph API settings and connection"/>
-                        <button name="test_send_email" type="object" 
-                                string="Send Test Email" class="oe_highlight"
-                                help="Send a test email to verify your Graph API configuration"/>
                     </div>
                 </page>
                 <page string="Graph API Logs" invisible="not use_graph_api">

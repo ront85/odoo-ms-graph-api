@@ -22,6 +22,24 @@ class IrMailServer(models.Model):
     ms_refresh_token = fields.Char(string='Microsoft Refresh Token', copy=False)
     ms_token_expiry = fields.Datetime(string='Token Expiry Date', copy=False)
     
+    # Fix compute method for smtp_authentication_info
+    smtp_authentication_info = fields.Char(compute='_compute_smtp_authentication_info')
+    
+    @api.depends('smtp_authentication', 'use_graph_api')
+    def _compute_smtp_authentication_info(self):
+        for server in self:
+            if server.use_graph_api:
+                server.smtp_authentication_info = _("Authentication managed by Microsoft Graph API")
+            else:
+                # Let the original compute method handle it
+                if hasattr(super(IrMailServer, server), '_compute_smtp_authentication_info'):
+                    # Call the super method if it exists
+                    super(IrMailServer, server)._compute_smtp_authentication_info()
+                else:
+                    # Default value if super method doesn't exist
+                    auth_type = server.smtp_authentication
+                    server.smtp_authentication_info = auth_type
+    
     @api.onchange('use_graph_api')
     def _onchange_use_graph_api(self):
         if self.use_graph_api:
@@ -261,6 +279,11 @@ class IrMailServer(models.Model):
                                 "contentType": part.get_content_type() or "application/octet-stream",
                                 "contentBytes": base64.b64encode(part.get_payload(decode=True)).decode('utf-8')
                             }
+                            
+                            # Log diagnostic information for debugging
+                            if part.get_content_type() == 'application/pdf':
+                                _logger.info("Processing PDF attachment: %s", part.get_filename())
+                            
                             attachments.append(attachment_data)
                         except Exception as e:
                             _logger.error(f"Error adding attachment: {str(e)}")
@@ -433,6 +456,36 @@ class IrMailServer(models.Model):
             
         return {
             'type': 'ir.actions.act_url',
-            'url': '/microsoft/auth',
+            'url': f'/mail_graph_api/auth?id={self.id}',
             'target': 'self',
-        } 
+        }
+        
+    def run_graph_api_diagnostics(self):
+        """Run diagnostics on the Microsoft Graph API configuration"""
+        self.ensure_one()
+        
+        if not self.use_graph_api:
+            raise UserError(_("Graph API is not enabled for this mail server."))
+            
+        try:
+            # Test the connection by refreshing the token
+            self.refresh_token_if_needed()
+            
+            # Test the actual Graph API connection by calling the /me endpoint
+            headers = {
+                'Authorization': f'Bearer {self.ms_access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            response = requests.get('https://graph.microsoft.com/v1.0/me', headers=headers, timeout=10)
+            
+            if response.status_code != 200:
+                raise UserError(_("Diagnostics Failed! API error: %s") % response.text)
+                
+            # If we got this far, the connection is working
+            user_info = response.json()
+            user_name = user_info.get('displayName', '') or user_info.get('userPrincipalName', '')
+            
+            raise UserError(_("Diagnostics Successful! Connected as: %s") % user_name)
+        except Exception as e:
+            raise UserError(_("Diagnostics Failed! Error: %s") % str(e)) 

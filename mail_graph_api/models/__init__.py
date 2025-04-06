@@ -2,6 +2,7 @@ from . import mail_server
 from . import mail_mail
 from . import ir_mail_server
 from . import mail_graph_api_log
+from . import mail_render_mixin
 
 # Configure logging
 import logging
