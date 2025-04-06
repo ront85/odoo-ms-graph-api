@@ -77,11 +77,17 @@ class IrMailServer(models.Model):
         for server in self:
             try:
                 if server.use_graph_api:
-                    # Get the most recent 100 logs related to Microsoft Graph API
-                    logs = self.env['ir.logging'].sudo().search([
-                        ('name', 'ilike', '%mail_graph_api%'),
-                        ('level', 'in', ['INFO', 'ERROR', 'WARNING'])
-                    ], order='create_date desc', limit=100)
+                    # Check if the model exists in the registry
+                    if 'mail.graph.api.log' in self.env:
+                        logs = self.env['mail.graph.api.log'].sudo().search([
+                            ('server_id', '=', server.id)
+                        ], order='create_date desc', limit=100)
+                    else:
+                        # Fall back to ir.logging if mail.graph.api.log doesn't exist
+                        logs = self.env['ir.logging'].sudo().search([
+                            ('name', 'ilike', '%mail_graph_api%'),
+                            ('level', 'in', ['INFO', 'ERROR', 'WARNING'])
+                        ], order='create_date desc', limit=100)
                     
                     if not logs:
                         server.graph_api_logs = "<p class='text-muted'>No logs found. Try sending an email or authenticating with Microsoft.</p>"
@@ -107,7 +113,8 @@ class IrMailServer(models.Model):
                         }.get(log.level, 'fa-info-circle')
                         
                         formatted_date = log.create_date.strftime('%Y-%m-%d %H:%M:%S')
-                        escaped_message = html.escape(log.message).replace('\n', '<br/>')
+                        message = log.message if hasattr(log, 'message') else str(log)
+                        escaped_message = html.escape(message).replace('\n', '<br/>')
                         
                         log_html += f"""
                         <div class="o_thread_message" style="margin-bottom: 10px; border-bottom: 1px solid #eeeeee; padding-bottom: 5px;">
@@ -465,36 +472,24 @@ class IrMailServer(models.Model):
         )
 
     def action_authenticate_microsoft(self):
-        """Redirect to Microsoft OAuth authentication page"""
+        """Redirect to Microsoft OAuth authentication"""
         self.ensure_one()
         
-        if not self.ms_client_id or not self.ms_tenant_id:
-            raise UserError(_("Client ID and Tenant ID are required for Microsoft Graph API authentication."))
-        
-        # Log the authentication attempt
-        _logger.info("Starting Microsoft Graph API authentication for mail server %s", self.id)
-        
-        # Construct the authentication URL
-        base_url = self.env['ir.config_parameter'].sudo().get_param('web.base.url')
-        redirect_uri = f"{base_url}/mail_graph_api/auth/callback"
-        
-        # Use delegated permissions for Mail.Send
-        scope = "https://graph.microsoft.com/Mail.Send offline_access"
-        
-        auth_url = f"https://login.microsoftonline.com/{self.ms_tenant_id}/oauth2/v2.0/authorize"
-        auth_url += f"?client_id={self.ms_client_id}"
-        auth_url += f"&response_type=code"
-        auth_url += f"&redirect_uri={redirect_uri}"
-        auth_url += f"&scope={scope}"
-        auth_url += f"&state={self.id}"
-        auth_url += f"&prompt=consent"  # Force consent screen to appear
-        
-        _logger.info("Redirecting to Microsoft authentication URL for mail server %s", self.id)
-        
-        # Return an action to redirect to the authentication URL
+        if not self.ms_client_id or not self.ms_client_secret or not self.ms_tenant_id:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Missing Configuration"),
+                    'message': _("Please set Client ID, Client Secret, and Tenant ID before authenticating."),
+                    'sticky': True,
+                    'type': 'danger',
+                }
+            }
+            
         return {
             'type': 'ir.actions.act_url',
-            'url': auth_url,
+            'url': '/microsoft/auth',
             'target': 'self',
         }
 
@@ -698,172 +693,69 @@ class IrMailServer(models.Model):
                 }
             }
 
-        # Enable debug mode for detailed logs
-        self.debug_mode = True
-        
-        diagnostics = []
-        status = "success"
-        
-        # Check for required configuration
-        if not self.ms_client_id:
-            diagnostics.append(("⚠️ Client ID is missing", "error"))
-            status = "danger"
-        else:
-            diagnostics.append(("✓ Client ID is configured", "success"))
-            
-        if not self.ms_client_secret:
-            diagnostics.append(("⚠️ Client Secret is missing", "error"))
-            status = "danger"
-        else:
-            diagnostics.append(("✓ Client Secret is configured", "success"))
-            
-        if not self.ms_tenant_id:
-            diagnostics.append(("⚠️ Tenant ID is missing", "error"))
-            status = "danger"
-        else:
-            diagnostics.append(("✓ Tenant ID is configured", "success"))
-            
-        if not self.ms_sender_email:
-            diagnostics.append(("⚠️ Sender Email is missing", "error"))
-            status = "danger"
-        else:
-            diagnostics.append(("✓ Sender Email is configured", "success"))
-            
-        # Check auth tokens
-        if not self.ms_access_token:
-            diagnostics.append(("⚠️ No access token - authentication required", "error"))
-            status = "danger"
-        else:
-            if self.ms_token_expiry:
-                expiry = fields.Datetime.from_string(self.ms_token_expiry)
-                if expiry > datetime.now():
-                    diagnostics.append((f"✓ Access token valid until {expiry}", "success"))
-                else:
-                    diagnostics.append((f"⚠️ Access token expired at {expiry}", "warning"))
-                    status = "warning"
-            else:
-                diagnostics.append(("⚠️ Access token present but no expiry date", "warning"))
-                status = "warning"
-        
-        # Create a detailed HTML report
-        html_report = """
-        <div class="card">
-            <div class="card-header">
-                <h3>Microsoft Graph API Diagnostics Report</h3>
-            </div>
-            <div class="card-body">
-                <h4>Configuration Check</h4>
-                <ul class="list-group mb-3">
-        """
-        
-        for message, msg_type in diagnostics:
-            color_class = {
-                "success": "text-success",
-                "warning": "text-warning",
-                "error": "text-danger"
-            }.get(msg_type, "")
-            html_report += f'<li class="list-group-item {color_class}">{message}</li>'
-            
-        html_report += """
-                </ul>
-            </div>
-        </div>
-        """
-            
-        # Try to test the connection
         try:
-            if all([self.ms_client_id, self.ms_client_secret, self.ms_tenant_id]):
-                _logger.info("Testing token acquisition in diagnostics")
-                token = self._get_oauth_token()
-                diagnostics.append(("✓ Successfully acquired access token", "success"))
+            # Enable debug mode for detailed logs
+            self.debug_mode = True
+            
+            # Check API connection
+            try:
+                self.refresh_token_if_needed()
                 
-                # Test the Microsoft Graph API endpoints
-                if token and self.ms_sender_email:
-                    # Test getting user profile
-                    headers = {
-                        'Authorization': f'Bearer {token}',
-                        'Content-Type': 'application/json'
-                    }
+                # Test API connection with the token
+                headers = {
+                    'Authorization': f'Bearer {self.ms_access_token}',
+                    'Content-Type': 'application/json'
+                }
+                
+                response = requests.get(f"{GRAPH_API_ENDPOINT}/me", headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    user_info = response.json()
+                    user_name = user_info.get('displayName') or user_info.get('userPrincipalName')
                     
-                    try:
-                        _logger.info("Testing Graph API user profile endpoint")
-                        user_url = f"{GRAPH_API_ENDPOINT}/users/{self.ms_sender_email}"
-                        response = requests.get(user_url, headers=headers, timeout=10)
-                        
-                        if response.status_code == 200:
-                            user_data = response.json()
-                            display_name = user_data.get('displayName', 'Unknown')
-                            mail = user_data.get('mail', self.ms_sender_email)
-                            diagnostics.append((f"✓ User profile found: {display_name} ({mail})", "success"))
-                        else:
-                            error_msg = response.json().get('error', {}).get('message', 'Unknown error')
-                            diagnostics.append((f"⚠️ Could not get user profile: {error_msg}", "warning"))
-                            status = "warning"
-                    except Exception as e:
-                        _logger.error("Error testing user profile: %s", str(e))
-                        diagnostics.append((f"⚠️ Error testing user profile: {str(e)}", "warning"))
-                        status = "warning"
+                    return {
+                        'type': 'ir.actions.client',
+                        'tag': 'display_notification',
+                        'params': {
+                            'title': _("API Connection Successful"),
+                            'message': _("Successfully connected to Microsoft Graph API as: %s") % user_name,
+                            'sticky': False,
+                            'type': 'success',
+                        }
+                    }
+                else:
+                    return {
+                        'type': 'ir.actions.client',
+                        'tag': 'display_notification',
+                        'params': {
+                            'title': _("API Connection Failed"),
+                            'message': _("Failed to connect to Microsoft Graph API: %s") % response.text,
+                            'sticky': True,
+                            'type': 'danger',
+                        }
+                    }
+            except Exception as e:
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': _("API Connection Failed"),
+                        'message': _("Error connecting to Microsoft Graph API: %s") % str(e),
+                        'sticky': True,
+                        'type': 'danger',
+                    }
+                }
         except Exception as e:
-            _logger.error("Error in diagnostics: %s", str(e))
-            diagnostics.append((f"⚠️ Error testing token: {str(e)}", "error"))
-            status = "danger"
-            
-        # Add recommendations based on the diagnostics
-        html_report += """
-            <div class="card mt-4">
-                <div class="card-header">
-                    <h4>Recommendations</h4>
-                </div>
-                <div class="card-body">
-                    <ul class="list-group">
-        """
-        
-        if status == "danger":
-            html_report += """
-                <li class="list-group-item text-danger">
-                    <strong>Critical issues found!</strong> You need to fix the configuration issues above before Graph API will work.
-                </li>
-            """
-        elif status == "warning":
-            html_report += """
-                <li class="list-group-item text-warning">
-                    <strong>Warnings found.</strong> Graph API may work, but there could be issues. Review the warnings above.
-                </li>
-            """
-        else:
-            html_report += """
-                <li class="list-group-item text-success">
-                    <strong>All checks passed!</strong> Your Graph API configuration looks good.
-                </li>
-            """
-            
-        html_report += """
-                    </ul>
-                </div>
-            </div>
-        """
-        
-        # Log diagnostics for reference
-        _logger.info("Graph API Diagnostics Results: %s", diagnostics)
-        
-        # Create a popup with the diagnostics results
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {
-                'title': _("Diagnostics Complete"),
-                'message': _("Diagnostics completed with status: %s. See logs for details.") % status,
-                'sticky': False,
-                'type': status,
-                'next': {
-                    'type': 'ir.actions.act_window',
-                    'res_model': 'ir.mail_server',
-                    'res_id': self.id,
-                    'view_mode': 'form',
-                    'target': 'current',
-                },
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Diagnostics Failed"),
+                    'message': _("Error running diagnostics: %s") % str(e),
+                    'sticky': True,
+                    'type': 'danger',
+                }
             }
-        }
         
     def test_send_email(self):
         """Send a test email to verify Graph API configuration"""
