@@ -1,0 +1,1 @@
+Enhanced Odoo Microsoft Graph API Module (v1.2.0) with deep diagnostics, freezing prevention, emergency tools, and improved UI. Added fix_freeze.sh and emergency_fix.py scripts to resolve freezing issues. See the README.md for detailed instructions.

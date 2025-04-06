@@ -54,7 +54,15 @@ class MailMail(models.Model):
                         # Mark as attempted to avoid infinite loops
                         mail.graph_api_attempted = True
                         
-                        _logger.info("Processing mail ID %s with Graph API server ID %s", mail.id, server.id)
+                        # Check if debug mode is enabled
+                        debug_mode = server.debug_mode if hasattr(server, 'debug_mode') else False
+                        if debug_mode:
+                            _logger.info("=== MAIL_GRAPH_API DEBUG: Processing mail ID %s with Graph API server ID %s ===", mail.id, server.id)
+                            _logger.info("=== MAIL_GRAPH_API DEBUG: Mail subject: %s ===", mail.subject)
+                            _logger.info("=== MAIL_GRAPH_API DEBUG: Recipients: %s ===", mail.email_to)
+                        else:
+                            _logger.info("Processing mail ID %s with Graph API server ID %s", mail.id, server.id)
+                        
                         # Make sure we have a valid token
                         server.refresh_token_if_needed()
                         
@@ -80,7 +88,11 @@ class MailMail(models.Model):
                         body = mail.body_html or mail.body
                         content_type = 'HTML' if mail.body_html else 'Text'
                         
-                        _logger.info("Email details - From: %s, To: %s, Subject: %s", from_email, email_to, subject)
+                        if debug_mode:
+                            _logger.info("=== MAIL_GRAPH_API DEBUG: Email details - From: %s, To: %s, Subject: %s ===", from_email, email_to, subject)
+                            _logger.info("=== MAIL_GRAPH_API DEBUG: Content type: %s ===", content_type)
+                        else:
+                            _logger.info("Email details - From: %s, To: %s, Subject: %s", from_email, email_to, subject)
                         
                         # Prepare the Graph API request
                         graph_url = f"https://graph.microsoft.com/v1.0/users/{from_email}/sendMail"
@@ -143,7 +155,11 @@ class MailMail(models.Model):
                         
                         # Add attachments if any
                         if mail.attachment_ids:
-                            _logger.info("Processing %s attachments", len(mail.attachment_ids))
+                            if debug_mode:
+                                _logger.info("=== MAIL_GRAPH_API DEBUG: Processing %s attachments ===", len(mail.attachment_ids))
+                            else:
+                                _logger.info("Processing %s attachments", len(mail.attachment_ids))
+                            
                             attachments = []
                             
                             for attachment in mail.attachment_ids:
@@ -155,27 +171,55 @@ class MailMail(models.Model):
                                         "contentBytes": base64.b64encode(attachment.datas).decode('utf-8')
                                     }
                                     attachments.append(attachment_data)
-                                    _logger.info("Added attachment: %s", attachment.name)
+                                    if debug_mode:
+                                        _logger.info("=== MAIL_GRAPH_API DEBUG: Added attachment: %s (%s bytes) ===", 
+                                                    attachment.name, len(attachment.datas))
+                                    else:
+                                        _logger.info("Added attachment: %s", attachment.name)
                                 except Exception as e:
                                     _logger.error("Failed to add attachment %s: %s", attachment.name, str(e))
                             
                             if attachments:
                                 email_payload["message"]["attachments"] = attachments
                         
-                        _logger.info("Sending email via Graph API")
+                        if debug_mode:
+                            _logger.info("=== MAIL_GRAPH_API DEBUG: Sending email via Graph API to %s ===", graph_url)
+                        else:
+                            _logger.info("Sending email via Graph API")
                         
-                        # Send the request to Graph API
+                        # Send the request to Graph API with timeout to prevent hanging
                         import requests
-                        response = requests.post(graph_url, headers=headers, json=email_payload, timeout=30)
-                        _logger.info("Email sent response status: %s", response.status_code)
+                        from requests.exceptions import Timeout
                         
-                        if response.status_code not in [200, 202]:
-                            error_message = f"Failed to send email: {response.text}"
+                        try:
+                            # Use a smaller timeout to prevent freezing the system
+                            response = requests.post(graph_url, headers=headers, json=email_payload, timeout=15)
+                            
+                            if debug_mode:
+                                _logger.info("=== MAIL_GRAPH_API DEBUG: Email sent response status: %s ===", response.status_code)
+                                if response.status_code not in [200, 202]:
+                                    _logger.info("=== MAIL_GRAPH_API DEBUG: Response content: %s ===", response.text)
+                            else:
+                                _logger.info("Email sent response status: %s", response.status_code)
+                            
+                            if response.status_code not in [200, 202]:
+                                error_message = f"Failed to send email: {response.text}"
+                                _logger.error(error_message)
+                                mail.write({'state': 'exception', 'failure_reason': error_message})
+                            else:
+                                if debug_mode:
+                                    _logger.info("=== MAIL_GRAPH_API DEBUG: Email sent successfully via Microsoft Graph API ===")
+                                else:
+                                    _logger.info("Email sent successfully via Microsoft Graph API")
+                                mail.write({'state': 'sent'})
+                        except Timeout:
+                            error_message = "Timeout while sending email via Microsoft Graph API"
                             _logger.error(error_message)
                             mail.write({'state': 'exception', 'failure_reason': error_message})
-                        else:
-                            _logger.info("Email sent successfully via Microsoft Graph API")
-                            mail.write({'state': 'sent'})
+                        except Exception as e:
+                            error_message = f"Error sending email: {str(e)}"
+                            _logger.error(error_message)
+                            mail.write({'state': 'exception', 'failure_reason': error_message})
                         
                         if auto_commit:
                             self.env.cr.commit()

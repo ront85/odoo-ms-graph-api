@@ -65,6 +65,11 @@ class IrMailServer(models.Model):
         help="Recent logs related to Microsoft Graph API",
         readonly=True
     )
+    debug_mode = fields.Boolean(
+        string="Debug Mode",
+        help="Enable detailed logging for Graph API operations",
+        default=False
+    )
 
     @api.depends('use_graph_api')
     def _compute_graph_api_logs(self):
@@ -637,4 +642,346 @@ class IrMailServer(models.Model):
                     raise UserError(_("Error testing Microsoft Graph API connection: %s") % str(e))
             else:
                 # Use the standard SMTP test for non-Graph API servers
-                return super(IrMailServer, self).test_smtp_connection() 
+                return super(IrMailServer, self).test_smtp_connection()
+
+    def clear_logs(self):
+        """Clear Graph API logs from the database"""
+        self.ensure_one()
+        try:
+            # Delete logs related to mail_graph_api
+            self.env['ir.logging'].sudo().search([
+                ('name', 'ilike', '%mail_graph_api%')
+            ]).unlink()
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Logs Cleared"),
+                    'message': _("Graph API logs have been cleared."),
+                    'sticky': False,
+                    'type': 'success',
+                }
+            }
+        except Exception as e:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Error"),
+                    'message': _("Failed to clear logs: %s") % str(e),
+                    'sticky': False,
+                    'type': 'danger',
+                }
+            }
+
+    def action_view_debug_logs(self):
+        """Open a popup window with the full debug logs"""
+        return {
+            'type': 'ir.actions.act_url',
+            'url': '/mail_graph_api/debug',
+            'target': 'new',
+        }
+
+    def run_graph_api_diagnostics(self):
+        """Run comprehensive diagnostics on the Graph API configuration"""
+        self.ensure_one()
+        
+        if not self.use_graph_api:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Not Configured"),
+                    'message': _("Graph API is not enabled for this mail server."),
+                    'sticky': False,
+                    'type': 'warning',
+                }
+            }
+
+        # Enable debug mode for detailed logs
+        self.debug_mode = True
+        
+        diagnostics = []
+        status = "success"
+        
+        # Check for required configuration
+        if not self.ms_client_id:
+            diagnostics.append(("⚠️ Client ID is missing", "error"))
+            status = "danger"
+        else:
+            diagnostics.append(("✓ Client ID is configured", "success"))
+            
+        if not self.ms_client_secret:
+            diagnostics.append(("⚠️ Client Secret is missing", "error"))
+            status = "danger"
+        else:
+            diagnostics.append(("✓ Client Secret is configured", "success"))
+            
+        if not self.ms_tenant_id:
+            diagnostics.append(("⚠️ Tenant ID is missing", "error"))
+            status = "danger"
+        else:
+            diagnostics.append(("✓ Tenant ID is configured", "success"))
+            
+        if not self.ms_sender_email:
+            diagnostics.append(("⚠️ Sender Email is missing", "error"))
+            status = "danger"
+        else:
+            diagnostics.append(("✓ Sender Email is configured", "success"))
+            
+        # Check auth tokens
+        if not self.ms_access_token:
+            diagnostics.append(("⚠️ No access token - authentication required", "error"))
+            status = "danger"
+        else:
+            if self.ms_token_expiry:
+                expiry = fields.Datetime.from_string(self.ms_token_expiry)
+                if expiry > datetime.now():
+                    diagnostics.append((f"✓ Access token valid until {expiry}", "success"))
+                else:
+                    diagnostics.append((f"⚠️ Access token expired at {expiry}", "warning"))
+                    status = "warning"
+            else:
+                diagnostics.append(("⚠️ Access token present but no expiry date", "warning"))
+                status = "warning"
+        
+        # Create a detailed HTML report
+        html_report = """
+        <div class="card">
+            <div class="card-header">
+                <h3>Microsoft Graph API Diagnostics Report</h3>
+            </div>
+            <div class="card-body">
+                <h4>Configuration Check</h4>
+                <ul class="list-group mb-3">
+        """
+        
+        for message, msg_type in diagnostics:
+            color_class = {
+                "success": "text-success",
+                "warning": "text-warning",
+                "error": "text-danger"
+            }.get(msg_type, "")
+            html_report += f'<li class="list-group-item {color_class}">{message}</li>'
+            
+        html_report += """
+                </ul>
+            </div>
+        </div>
+        """
+            
+        # Try to test the connection
+        try:
+            if all([self.ms_client_id, self.ms_client_secret, self.ms_tenant_id]):
+                _logger.info("Testing token acquisition in diagnostics")
+                token = self._get_oauth_token()
+                diagnostics.append(("✓ Successfully acquired access token", "success"))
+                
+                # Test the Microsoft Graph API endpoints
+                if token and self.ms_sender_email:
+                    # Test getting user profile
+                    headers = {
+                        'Authorization': f'Bearer {token}',
+                        'Content-Type': 'application/json'
+                    }
+                    
+                    try:
+                        _logger.info("Testing Graph API user profile endpoint")
+                        user_url = f"{GRAPH_API_ENDPOINT}/users/{self.ms_sender_email}"
+                        response = requests.get(user_url, headers=headers, timeout=10)
+                        
+                        if response.status_code == 200:
+                            user_data = response.json()
+                            display_name = user_data.get('displayName', 'Unknown')
+                            mail = user_data.get('mail', self.ms_sender_email)
+                            diagnostics.append((f"✓ User profile found: {display_name} ({mail})", "success"))
+                        else:
+                            error_msg = response.json().get('error', {}).get('message', 'Unknown error')
+                            diagnostics.append((f"⚠️ Could not get user profile: {error_msg}", "warning"))
+                            status = "warning"
+                    except Exception as e:
+                        _logger.error("Error testing user profile: %s", str(e))
+                        diagnostics.append((f"⚠️ Error testing user profile: {str(e)}", "warning"))
+                        status = "warning"
+        except Exception as e:
+            _logger.error("Error in diagnostics: %s", str(e))
+            diagnostics.append((f"⚠️ Error testing token: {str(e)}", "error"))
+            status = "danger"
+            
+        # Add recommendations based on the diagnostics
+        html_report += """
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h4>Recommendations</h4>
+                </div>
+                <div class="card-body">
+                    <ul class="list-group">
+        """
+        
+        if status == "danger":
+            html_report += """
+                <li class="list-group-item text-danger">
+                    <strong>Critical issues found!</strong> You need to fix the configuration issues above before Graph API will work.
+                </li>
+            """
+        elif status == "warning":
+            html_report += """
+                <li class="list-group-item text-warning">
+                    <strong>Warnings found.</strong> Graph API may work, but there could be issues. Review the warnings above.
+                </li>
+            """
+        else:
+            html_report += """
+                <li class="list-group-item text-success">
+                    <strong>All checks passed!</strong> Your Graph API configuration looks good.
+                </li>
+            """
+            
+        html_report += """
+                    </ul>
+                </div>
+            </div>
+        """
+        
+        # Log diagnostics for reference
+        _logger.info("Graph API Diagnostics Results: %s", diagnostics)
+        
+        # Create a popup with the diagnostics results
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': _("Diagnostics Complete"),
+                'message': _("Diagnostics completed with status: %s. See logs for details.") % status,
+                'sticky': False,
+                'type': status,
+                'next': {
+                    'type': 'ir.actions.act_window',
+                    'res_model': 'ir.mail_server',
+                    'res_id': self.id,
+                    'view_mode': 'form',
+                    'target': 'current',
+                },
+            }
+        }
+        
+    def test_send_email(self):
+        """Send a test email to verify Graph API configuration"""
+        self.ensure_one()
+        
+        if not self.use_graph_api:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Not Configured"),
+                    'message': _("Graph API is not enabled for this mail server."),
+                    'sticky': False,
+                    'type': 'warning',
+                }
+            }
+            
+        if not self.ms_sender_email:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Missing Email"),
+                    'message': _("Please configure a sender email address."),
+                    'sticky': False,
+                    'type': 'warning',
+                }
+            }
+            
+        # Enable debug mode for detailed logs
+        self.debug_mode = True
+        
+        try:
+            # Ensure we have a valid token
+            token = self._get_oauth_token()
+            
+            # Prepare the test email
+            current_user = self.env.user
+            recipient_email = current_user.email or self.ms_sender_email
+            
+            # Prepare the Graph API request
+            graph_url = f"{GRAPH_API_ENDPOINT}/users/{self.ms_sender_email}/sendMail"
+            headers = {
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Prepare a test email payload
+            email_payload = {
+                "message": {
+                    "subject": "Test Email from Odoo Microsoft Graph API Integration",
+                    "body": {
+                        "contentType": "HTML",
+                        "content": f"""
+                        <h2>Test Email Success!</h2>
+                        <p>This email confirms that your Microsoft Graph API integration is working correctly.</p>
+                        <p>Sent from Odoo at {datetime.now()} by user {current_user.name}</p>
+                        <p>Server: {self.name}</p>
+                        """
+                    },
+                    "toRecipients": [
+                        {
+                            "emailAddress": {
+                                "address": recipient_email
+                            }
+                        }
+                    ],
+                    "from": {
+                        "emailAddress": {
+                            "address": self.ms_sender_email
+                        }
+                    }
+                },
+                "saveToSentItems": "true"
+            }
+            
+            _logger.info("Sending test email to %s", recipient_email)
+            
+            # Send the request to Graph API
+            response = requests.post(graph_url, headers=headers, json=email_payload, timeout=30)
+            _logger.info("Test email response status: %s", response.status_code)
+            
+            if response.status_code not in [200, 202]:
+                error_message = f"Failed to send test email: {response.text}"
+                _logger.error(error_message)
+                return {
+                    'type': 'ir.actions.client',
+                    'tag': 'display_notification',
+                    'params': {
+                        'title': _("Test Failed"),
+                        'message': _(error_message),
+                        'sticky': False,
+                        'type': 'danger',
+                    }
+                }
+            
+            _logger.info("Test email sent successfully via Microsoft Graph API")
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Test Successful"),
+                    'message': _("Test email sent successfully to %s") % recipient_email,
+                    'sticky': False,
+                    'type': 'success',
+                }
+            }
+            
+        except Exception as e:
+            error_message = f"Error sending test email: {str(e)}"
+            _logger.error(error_message)
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': _("Test Failed"),
+                    'message': _(error_message),
+                    'sticky': False,
+                    'type': 'danger',
+                }
+            } 
