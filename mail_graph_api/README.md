@@ -11,7 +11,7 @@ This module provides seamless integration between Odoo's mail system and Microso
 - Support for CC and BCC recipients
 - Detailed logging for troubleshooting
 - Fallback to SMTP option
-- Proper timeout handling to prevent system freezes
+- Proper timeout handling
 
 ## Benefits
 
@@ -60,7 +60,6 @@ The module integrates with Odoo's email system by:
 2. Implementing a custom `send_email()` method that uses the Graph API instead of SMTP
 3. Handling OAuth2 authentication flow with proper token management
 4. Providing automatic token refresh when tokens expire
-5. Adding proper timeout handling to prevent system freezes during API interactions
 
 The implementation follows Odoo best practices and properly integrates with the existing mail system architecture.
 

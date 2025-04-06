@@ -1,6 +1,6 @@
 {
     'name': 'Microsoft Graph API Mail Integration',
-    'version': '1.0',
+    'version': '1.0.0',
     'category': 'Mail',
     'summary': 'Send emails using Microsoft Graph API',
     'description': """
